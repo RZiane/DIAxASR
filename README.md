@@ -8,7 +8,7 @@ Développé dans le cadre du projet [CAENNAIS](https://crisco.unicaen.fr/caennai
 
 - la **diarisation automatique** de fichiers audio à l’aide d’un modèle Pyannote Audio ;
 - la **segmentation des enregistrements** avec export des segments audio et des métadonnées (`.tsv`, `.eaf`) ;
-- la **transcription automatique** avec un modèle Whisper fine-tuné ;
+- la **transcription automatique** avec un modèle Whisper (fine-tuné) ;
 - la **mise à jour des fichiers ELAN (`.eaf`)** avec les transcriptions.
 
 Ce pipeline peut être exécuté :
