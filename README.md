@@ -2,7 +2,7 @@
 
 ## Présentation
 
-`DIAxASR.py` est un pipeline Python complet permettant :
+`DIAxASR.py` est un pipeline Python permettant :
 
 - la **diarisation automatique** de fichiers audio à l’aide d’un modèle Pyannote Audio ;
 - la **segmentation des enregistrements** avec export des segments audio et des métadonnées (`.tsv`, `.eaf`) ;
