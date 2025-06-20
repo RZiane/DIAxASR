@@ -29,8 +29,11 @@ def load_diarization_pipeline(model_id, hf_token):
         model = SegmentationModel().from_pretrained(model_id)
         model = model.to_pyannote_model()
         pipeline._segmentation.model = model.to(device)
+    
+    else:
+        model_id = "pyannote/segmentation-3.0"
 
-    print(f"Pipeline de diarisation chargé avec modèle : {model_id}")
+    print(f"Pipeline de diarisation chargé avec le modèle : {model_id}")
     return pipeline
 
 
@@ -274,6 +277,11 @@ def update_eaf_with_tsv_dir(eaf_dir, tsv_dir, output_dir):
 def main():
     import argparse
     import os
+    import torch
+    import gc
+
+    torch.cuda.empty_cache()
+    gc.collect()
 
     parser = argparse.ArgumentParser(description="Pipeline de diarisation et transcription.")
 
@@ -291,11 +299,10 @@ def main():
                         help="Dossier où sauvegarder les résultats")
 
     parser.add_argument('--segmentation-model-id', type=str, required=False,
-                        default="pyannote/segmentation-3.0",
                         help="ID du modèle de segmentation Pyannote")
 
     parser.add_argument('--asr-model-id', type=str, required=False,
-                        default="Rziane/whisper-large-v3-turbo-CAENNAIS",
+                        default="openai/whisper-large-v3-turbo",
                         help="ID du modèle ASR (Whisper)")
 
     parser.add_argument('--hf-token', type=str, required=False,
