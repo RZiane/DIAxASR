@@ -2,7 +2,9 @@
 
 ## Présentation
 
-`DIAxASR.py` est un pipeline Python permettant :
+
+
+Développé dans le cadre du projet [CAENNAIS](https://crisco.unicaen.fr/caennais-corpus-audio-detudiants-natifs-et-non-natifs-en-interactions/), `DIAxASR.py` est un pipeline Python permettant :
 
 - la **diarisation automatique** de fichiers audio à l’aide d’un modèle Pyannote Audio ;
 - la **segmentation des enregistrements** avec export des segments audio et des métadonnées (`.tsv`, `.eaf`) ;
@@ -132,7 +134,7 @@ Selon les paramètres et les formats choisis :
 
 ## Auteurs
 
-Développé par **Rayan Ziane** dans le cadre du projet [CAENNAIS](https://crisco.unicaen.fr/caennais-corpus-audio-detudiants-natifs-et-non-natifs-en-interactions/): 
+Développé par **Rayan Ziane** dans le cadre du projet [CAENNAIS](https://crisco.unicaen.fr/caennais-corpus-audio-detudiants-natifs-et-non-natifs-en-interactions/)
 
 Modèle ASR pour la transcription semi-orthographique du français parlé : [`Rziane/whisper-large-v3-turbo-CAENNAIS_GB`](https://huggingface.co/Rziane/whisper-large-v3-turbo-CAENNAIS_GB)
 
