@@ -50,9 +50,12 @@ Le notebook `run_DIAxASR.ipynb` contient des **cellules d'installation des dépe
 
 ```python
 !git clone https://github.com/huggingface/diarizers.git
-!pip install -e /home/ziane212/projects/MMS_ASR_finetuning/diarizers/.
+!pip install -e chemin/du/depot/diarizers/.
 ```
+Optionnel, uniquement pour l'utilisation de modèles de diarisation finetunés avec [diarizers](https://github.com/huggingface/diarizers)
+
 et 
+
 ```python
 !pip install -r chemin/du/fichier/requirements.txt
 ```
