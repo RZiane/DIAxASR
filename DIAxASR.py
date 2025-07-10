@@ -1,3 +1,31 @@
+import os
+import string
+import gc
+import argparse
+import tempfile
+import subprocess
+import shutil
+
+import pandas as pd
+import numpy as np
+
+import pympi
+
+from pydub import AudioSegment
+from pydub.exceptions import CouldntEncodeError
+
+import torch
+
+from pyannote.audio import Pipeline
+from pyannote.audio import Audio as PaAudio
+
+from diarizers import SegmentationModel
+
+from transformers import WhisperProcessor, WhisperForConditionalGeneration
+
+from datasets import load_dataset, Audio, DatasetDict
+
+
 # Fonctions utilitaires
 def convert_sec(timecode):
   sec = int(timecode.split(".")[0]) * 1000 + int(timecode.split(".")[1])
@@ -13,12 +41,58 @@ def get_ts(seg):
   return ts
 
 
+def convert_audio_files_to_wav(input_dir, tmp_dir):
+    """
+    Convertit tous les fichiers audio (mp3, m4a, etc.) en fichiers .wav (mono, 16kHz)
+    et les place dans un dossier temporaire.
+
+    Args:
+        input_dir (str): Dossier d'entrée avec fichiers audio.
+        tmp_dir (str): Dossier temporaire pour stocker les fichiers convertis.
+
+    Returns:
+        str: Le chemin du dossier contenant les fichiers wav convertis.
+    """
+
+    os.makedirs(tmp_dir, exist_ok=True)
+    supported_formats = (".mp3", ".m4a", ".flac", ".aac", ".ogg", ".wma", ".wav")
+    converted = 0
+
+    for filename in sorted(os.listdir(input_dir)):
+        file_path = os.path.join(input_dir, filename)
+        base, ext = os.path.splitext(filename)
+        ext = ext.lower()
+
+        if ext not in supported_formats:
+            continue
+
+        try:
+            audio = AudioSegment.from_file(file_path)
+            audio = audio.set_channels(1).set_frame_rate(16000)
+            wav_path = os.path.join(tmp_dir, f"{base}.wav")
+            audio.export(wav_path, format="wav")
+            print(f"✅ Converti : {filename} -> {wav_path}")
+            converted += 1
+        except Exception as e:
+            print(f"⚠️ Erreur de conversion pour {filename} : {e}")
+
+    print(f"🎧 Conversion terminée. {converted} fichiers convertis dans {tmp_dir}.")
+    return tmp_dir
+
+def clean_temp_wavs(tmp_dir):
+    """
+    Supprime le dossier temporaire contenant les fichiers .wav convertis.
+
+    Args:
+        tmp_dir (str): Chemin vers le dossier temporaire à supprimer.
+    """
+    if os.path.exists(tmp_dir):
+        import shutil
+        shutil.rmtree(tmp_dir)
+        print(f"🧹 Dossier temporaire supprimé : {tmp_dir}")
+
 # Chargement du pipeline de diarisation Pyannote avec modèle custom
 def load_diarization_pipeline(model_id, hf_token):
-    import torch
-    from pyannote.audio import Pipeline
-    from diarizers import SegmentationModel
-
     device = torch.device("cuda")
     pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1",
                                         use_auth_token=hf_token).to(device)
@@ -37,13 +111,6 @@ def load_diarization_pipeline(model_id, hf_token):
 
 # Diarisation de tous les fichiers WAV d'un dossier avec un pipeline donné
 def run_diarization_on_dir(wav_dir, output_dir, pipeline, output_format="tsv"):
-    import os
-    import string
-    import pandas as pd
-    from pydub import AudioSegment
-    from pyannote.audio import Audio as PaAudio
-    import pympi
-
     assert output_format in ["eaf", "tsv"], "output_format must be either 'eaf' or 'tsv'"
 
     io = PaAudio(mono='downmix', sample_rate=16000)
@@ -52,6 +119,7 @@ def run_diarization_on_dir(wav_dir, output_dir, pipeline, output_format="tsv"):
 
     for wav_file in sorted(os.listdir(wav_dir)):
         if not wav_file.endswith(".wav"):
+            print(f"Le fichier {wav_file} n'est pas au format wav")
             continue
 
         full_path = os.path.join(wav_dir, wav_file)
@@ -64,6 +132,7 @@ def run_diarization_on_dir(wav_dir, output_dir, pipeline, output_format="tsv"):
 
         if output_format == 'eaf':
             eaf = pympi.Elan.Eaf()
+            eaf.add_linked_file(full_path)
             for locuteur in locuteurs:
                 eaf.add_tier(locuteur)
         else:
@@ -103,80 +172,9 @@ def run_diarization_on_dir(wav_dir, output_dir, pipeline, output_format="tsv"):
         print(f"Fichier exporté : {out_file}")
 
 
-# Mise à jour de build_dataset_from_eaf pour prendre en entrée un dossier et produire un fichier TSV par fichier EAF
-
-# def build_dataset_from_eaf_dir(eaf_dir, wav_dir, output_base_dir):
-#     import os
-#     import pympi
-#     import pandas as pd
-#     from pydub import AudioSegment
-
-#     os.makedirs(os.path.join(output_base_dir, "tsv"), exist_ok=True)
-#     annotations_passed = 0
-
-#     for file_name in os.listdir(eaf_dir):
-#         if file_name.endswith(".eaf"):
-#             base_name = file_name[:-4]  # retirer .eaf
-#             eaf_path = os.path.join(eaf_dir, file_name)
-#             wav_path = os.path.join(wav_dir, base_name + ".wav")
-#             if not os.path.exists(wav_path):
-#                 print(f"Fichier WAV manquant pour : {base_name}")
-#                 continue
-
-#             eaf = pympi.Elan.Eaf(eaf_path)
-#             audio = AudioSegment.from_wav(wav_path)
-
-#             data = []
-
-#             for tier_name in eaf.tiers:
-#                 if "_extra" not in tier_name:
-#                     for annotation in eaf.get_annotation_data_for_tier(tier_name):
-#                         start_time, end_time, value = annotation
-#                         duration = (end_time - start_time) / 1000
-#                         value = value.strip()
-#                         if duration > 30 or (value.startswith("[") and value.endswith("]")):
-#                             annotations_passed += 1
-#                             continue
-
-#                         extract = audio[start_time:end_time]
-
-#                         # Vérifications robustes
-#                         if len(extract) == 0 or extract.frame_count() == 0:
-#                             print(f"⚠️ Segment vide ignoré : {base_name} {tier_name} {start_time}-{end_time}")
-#                             annotations_passed += 1
-#                             continue
-
-#                         try:
-#                             extract_dir = os.path.join(output_base_dir, "wav")
-#                             os.makedirs(extract_dir, exist_ok=True)
-#                             output_wav = os.path.join(extract_dir, f"{base_name}_{tier_name}_{start_time}_{end_time}.wav")
-#                             extract.export(output_wav, format="wav")
-#                         except Exception as e:
-#                             print(f"⚠️ Export échoué pour segment {base_name} {tier_name} {start_time}-{end_time} : {e}")
-#                             annotations_passed += 1
-#                             continue
-
-#                         timecodes = f"[{start_time}, {end_time}]"
-#                         data.append([output_wav, value, timecodes, tier_name])
-
-#             df = pd.DataFrame(data, columns=["audio", "text", "timecodes", "speaker"])
-#             output_tsv_path = os.path.join(output_base_dir, "tsv", f"{base_name}.tsv")
-#             df.to_csv(output_tsv_path, sep='\t', index=False)
-#             print(f"TSV généré : {output_tsv_path}")
-
-#     print(f"Annotations ignorées : {annotations_passed}")
-#     return os.path.join(output_base_dir, "tsv")
-
-
+# Construction du dataset pour le traitement ASR à partir de l'EAF
 def build_dataset_from_eaf_dir(eaf_dir, wav_dir, output_base_dir):
-    import os
-    import pandas as pd
-    import pympi
-    from pydub import AudioSegment
-    from pydub.exceptions import CouldntEncodeError
-    import tempfile
-    import subprocess
-
+    
     os.makedirs(os.path.join(output_base_dir, "tsv"), exist_ok=True)
     os.makedirs(os.path.join(output_base_dir, "wav"), exist_ok=True)
     annotations_passed = 0
@@ -256,8 +254,6 @@ def build_dataset_from_eaf_dir(eaf_dir, wav_dir, output_base_dir):
 
 # Chargement des modèles Whisper
 def load_whisper_model(model_id):
-    from transformers import WhisperProcessor, WhisperForConditionalGeneration
-    import torch
 
     processor = WhisperProcessor.from_pretrained(model_id)
     model = WhisperForConditionalGeneration.from_pretrained(model_id)
@@ -268,8 +264,6 @@ def load_whisper_model(model_id):
 
 # Chargement des datasets audio à partir d'un dossier TSV
 def load_dataset_from_tsv_dir(tsv_dir):
-    from datasets import load_dataset, Audio, DatasetDict
-    import os
 
     dataset_dict = {}
     for file_name in sorted(os.listdir(tsv_dir)):
@@ -290,11 +284,6 @@ def load_dataset_from_tsv_dir(tsv_dir):
 
 # Transcription des datasets et sauvegarde des résultats dans un dossier TSV
 def transcribe_dataset_dir(dataset_dict, processor, model, output_dir, language):
-    import os
-    import pandas as pd
-    from pydub import AudioSegment
-    import torch
-    import numpy as np
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -342,9 +331,6 @@ def transcribe_dataset_dir(dataset_dict, processor, model, output_dir, language)
 
 # Mise à jour des fichiers EAF avec les transcriptions associées
 def update_eaf_with_tsv_dir(eaf_dir, tsv_dir, output_dir):
-    import os
-    import pympi
-    import pandas as pd
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -413,52 +399,62 @@ def run_pipeline_from_interface(wav_dir, eaf_dir, output_dir, diar_model_id, asr
 
 
 # CLI principale
-if __name__ == "__main__":
-    import argparse
-    import os
-    import torch
-    import gc
-
+def main():
     torch.cuda.empty_cache()
     gc.collect()
 
-    parser = argparse.ArgumentParser(description="Pipeline de diarisation et transcription.")
-
-    parser.add_argument('--mode', type=str, required=True,
-                        choices=['diarize', 'transcribe', 'pipeline'],
+    parser = argparse.ArgumentParser(description="Pipeline de diarisation et transcription avec conversion audio.")
+    parser.add_argument('--mode', type=str, required=True, choices=['diarize', 'transcribe', 'pipeline'],
                         help="Mode d'exécution : diarize, transcribe, pipeline")
-
-    parser.add_argument('--wav-dir', type=str, required=True, help="Dossier contenant les fichiers WAV")
+    parser.add_argument('--wav-dir', type=str, required=True, help="Dossier contenant les fichiers audio à traiter")
     parser.add_argument('--eaf-dir', type=str, default=None, help="Dossier contenant les fichiers EAF")
-    parser.add_argument('--output-dir', type=str, required=True, help="Dossier où sauvegarder les résultats")
-    parser.add_argument('--segmentation-model-id', type=str, required=False, help="ID du modèle de segmentation")
-    parser.add_argument('--asr-model-id', type=str, required=False, default="openai/whisper-large-v3-turbo", help="ID du modèle ASR")
-    parser.add_argument('--hf-token', type=str, required=False, help="Hugging Face token")
-    parser.add_argument('--out-format', type=str, choices=['eaf', 'tsv'], default='tsv', help="Format de sortie")
-    parser.add_argument('--language', type=str, required=False, help="Code langue pour forcer Whisper (ex: 'fr', 'ht', 'en')")
+    parser.add_argument('--output-dir', type=str, required=True, help="Dossier de sortie pour les résultats")
+    parser.add_argument('--segmentation-model-id', type=str, required=False, help="ID du modèle Pyannote (segmentation)")
+    parser.add_argument('--asr-model-id', type=str, required=False, default="openai/whisper-large-v3-turbo",
+                        help="ID du modèle Whisper pour l'ASR")
+    parser.add_argument('--hf-token', type=str, required=False, help="Hugging Face token pour Pyannote")
+    parser.add_argument('--out-format', type=str, choices=['eaf', 'tsv'], default='tsv',
+                        help="Format de sortie (eaf ou tsv)")
+    parser.add_argument('--language', type=str, required=False, help="Code langue pour Whisper (ex : fr, ht, en)")
+    parser.add_argument('--keep-temp-audio', action='store_true',
+                        help="Si spécifié, conserve les fichiers audio temporaires après exécution.")
 
     args = parser.parse_args()
 
-    if args.mode in ['diarize', 'pipeline']:
-        pipeline = load_diarization_pipeline(args.segmentation_model_id, args.hf_token)
-        run_diarization_on_dir(args.wav_dir, args.output_dir, pipeline, args.out_format)
+    # Conversion des fichiers audio
+    tmp_wav_dir = os.path.join(args.output_dir, "_temp_wavs")
+    converted_wav_dir = convert_audio_files_to_wav(args.wav_dir, tmp_wav_dir)
 
-    if args.mode == 'transcribe':
-        if not args.eaf_dir:
-            raise ValueError("--eaf-dir est requis pour la transcription.")
-        tsv_dir = build_dataset_from_eaf_dir(args.eaf_dir, args.wav_dir, args.output_dir)
-    elif args.mode == 'pipeline':
-        tsv_dir = os.path.join(args.output_dir, "tsv")
+    try:
+        # Étape de diarisation
+        if args.mode in ['diarize', 'pipeline']:
+            pipeline = load_diarization_pipeline(args.segmentation_model_id, args.hf_token)
+            run_diarization_on_dir(converted_wav_dir, args.output_dir, pipeline, args.out_format)
 
-    if args.mode in ['transcribe', 'pipeline']:
-        processor, model = load_whisper_model(args.asr_model_id)
-        dataset_dict = load_dataset_from_tsv_dir(tsv_dir)
-        transcribed_tsv_dir = os.path.join(args.output_dir, "tsv_transcribed")
+        # Préparation des données pour ASR (si transcribe ou pipeline)
+        if args.mode == 'transcribe':
+            if not args.eaf_dir:
+                raise ValueError("--eaf-dir est requis pour le mode 'transcribe'.")
+            tsv_dir = build_dataset_from_eaf_dir(args.eaf_dir, converted_wav_dir, args.output_dir)
+        elif args.mode == 'pipeline':
+            tsv_dir = os.path.join(args.output_dir, "tsv")
 
-        # ✅ Passage du paramètre de langue à la fonction
-        transcribe_dataset_dir(dataset_dict, processor, model, transcribed_tsv_dir, language=args.language)
+        # Transcription automatique
+        if args.mode in ['transcribe', 'pipeline']:
+            processor, model = load_whisper_model(args.asr_model_id)
+            dataset_dict = load_dataset_from_tsv_dir(tsv_dir)
+            transcribed_tsv_dir = os.path.join(args.output_dir, "tsv_transcribed")
+            transcribe_dataset_dir(dataset_dict, processor, model, transcribed_tsv_dir, language=args.language)
 
-        if args.out_format == "eaf" and args.eaf_dir:
-            eaf_updated_dir = os.path.join(args.output_dir, "eaf_updated")
-            update_eaf_with_tsv_dir(args.eaf_dir, transcribed_tsv_dir, eaf_updated_dir)
+            # Mise à jour des EAF avec transcriptions
+            if args.out_format == "eaf" and args.eaf_dir:
+                eaf_updated_dir = os.path.join(args.output_dir, "eaf_updated")
+                update_eaf_with_tsv_dir(args.eaf_dir, transcribed_tsv_dir, eaf_updated_dir)
 
+    finally:
+        # Nettoyage du dossier temporaire si on ne souhaite PAS le conserver
+        if not args.keep_temp_audio:
+            clean_temp_wavs(tmp_wav_dir)
+
+if __name__ == "__main__":
+    main()
