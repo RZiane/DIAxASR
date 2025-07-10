@@ -28,17 +28,17 @@ from datasets import load_dataset, Audio, DatasetDict
 
 # Fonctions utilitaires
 def convert_sec(timecode):
-  sec = int(timecode.split(".")[0]) * 1000 + int(timecode.split(".")[1])
-  return sec
+    sec = int(timecode.split(".")[0]) * 1000 + int(timecode.split(".")[1])
+    return sec
 
 def convert_to_ms(timecode):
-  hours, minutes, seconds = timecode.split(":")
-  ms = int(hours) * 3600000 + int(minutes) * 60000 + int(seconds.split(".")[0]) * 1000 + int(seconds.split(".")[1])
-  return ms
+    hours, minutes, seconds = timecode.split(":")
+    ms = int(hours) * 3600000 + int(minutes) * 60000 + int(seconds.split(".")[0]) * 1000 + int(seconds.split(".")[1])
+    return ms
 
 def get_ts(seg):
-  ts = str(seg).replace('[', '').replace(']', '').replace(' ', '').split('-->')
-  return ts
+    ts = str(seg).replace('[', '').replace(']', '').replace(' ', '').split('-->')
+    return ts
 
 
 def convert_audio_files_to_wav(input_dir, tmp_dir):
@@ -87,13 +87,12 @@ def clean_temp_wavs(tmp_dir):
         tmp_dir (str): Chemin vers le dossier temporaire à supprimer.
     """
     if os.path.exists(tmp_dir):
-        import shutil
         shutil.rmtree(tmp_dir)
         print(f"🧹 Dossier temporaire supprimé : {tmp_dir}")
 
 # Chargement du pipeline de diarisation Pyannote avec modèle custom
-def load_diarization_pipeline(model_id, hf_token):
-    device = torch.device("cuda")
+def load_diarization_pipeline(model_id, hf_token, device):
+    device = torch.device(device)
     pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1",
                                         use_auth_token=hf_token).to(device)
 
@@ -101,11 +100,10 @@ def load_diarization_pipeline(model_id, hf_token):
         model = SegmentationModel().from_pretrained(model_id)
         model = model.to_pyannote_model()
         pipeline._segmentation.model = model.to(device)
-    
     else:
         model_id = "pyannote/segmentation-3.0"
 
-    print(f"Pipeline de diarisation chargé avec le modèle : {model_id}")
+    print(f"Pipeline de diarisation chargé avec le modèle : {model_id} sur {device}")
     return pipeline
 
 
@@ -125,7 +123,8 @@ def run_diarization_on_dir(wav_dir, output_dir, pipeline, output_format="tsv"):
         full_path = os.path.join(wav_dir, wav_file)
         basename = os.path.splitext(wav_file)[0]
         waveform, sample_rate = io(full_path)
-        diarization_result = pipeline({"waveform": waveform, "sample_rate": sample_rate}, num_speakers=2)
+        # diarization_result = pipeline({"waveform": waveform, "sample_rate": sample_rate}, num_speakers=2)
+        diarization_result = pipeline({"waveform": waveform, "sample_rate": sample_rate})
 
         diarization_result_temp = [i.split(' ') for i in str(diarization_result).split('\n') if i.strip() != '']
         locuteurs = list(set([i[6] for i in diarization_result_temp]))
@@ -174,7 +173,6 @@ def run_diarization_on_dir(wav_dir, output_dir, pipeline, output_format="tsv"):
 
 # Construction du dataset pour le traitement ASR à partir de l'EAF
 def build_dataset_from_eaf_dir(eaf_dir, wav_dir, output_base_dir):
-    
     os.makedirs(os.path.join(output_base_dir, "tsv"), exist_ok=True)
     os.makedirs(os.path.join(output_base_dir, "wav"), exist_ok=True)
     annotations_passed = 0
@@ -253,18 +251,16 @@ def build_dataset_from_eaf_dir(eaf_dir, wav_dir, output_base_dir):
     return os.path.join(output_base_dir, "tsv")
 
 # Chargement des modèles Whisper
-def load_whisper_model(model_id):
-
+def load_whisper_model(model_id, device):
     processor = WhisperProcessor.from_pretrained(model_id)
     model = WhisperForConditionalGeneration.from_pretrained(model_id)
-    model = model.to("cuda")
-    print(f"Modèle Whisper chargé : {model_id}")
+    model = model.to(device)
+    print(f"Modèle Whisper chargé : {model_id} sur {device}")
     return processor, model
 
 
 # Chargement des datasets audio à partir d'un dossier TSV
 def load_dataset_from_tsv_dir(tsv_dir):
-
     dataset_dict = {}
     for file_name in sorted(os.listdir(tsv_dir)):
         if file_name.endswith(".tsv"):
@@ -284,7 +280,6 @@ def load_dataset_from_tsv_dir(tsv_dir):
 
 # Transcription des datasets et sauvegarde des résultats dans un dossier TSV
 def transcribe_dataset_dir(dataset_dict, processor, model, output_dir, language):
-
     os.makedirs(output_dir, exist_ok=True)
 
     forced_decoder_ids = processor.get_decoder_prompt_ids(language=language, task="transcribe")
@@ -331,7 +326,6 @@ def transcribe_dataset_dir(dataset_dict, processor, model, output_dir, language)
 
 # Mise à jour des fichiers EAF avec les transcriptions associées
 def update_eaf_with_tsv_dir(eaf_dir, tsv_dir, output_dir):
-
     os.makedirs(output_dir, exist_ok=True)
 
     for file_name in os.listdir(tsv_dir):
@@ -366,7 +360,7 @@ def update_eaf_with_tsv_dir(eaf_dir, tsv_dir, output_dir):
             print(f"Fichier EAF mis à jour : {output_eaf_path}")
 
 # Fonction pour appel depuis une interface Gradio
-def run_pipeline_from_interface(wav_dir, eaf_dir, output_dir, diar_model_id, asr_model_id, hf_token, output_format, language):
+def run_pipeline_from_interface(wav_dir, eaf_dir, output_dir, diar_model_id, asr_model_id, hf_token, output_format, language, device):
     torch.cuda.empty_cache()
     gc.collect()
 
@@ -374,7 +368,7 @@ def run_pipeline_from_interface(wav_dir, eaf_dir, output_dir, diar_model_id, asr
         return f"Format invalide : {output_format}"
 
     if diar_model_id and hf_token:
-        pipeline = load_diarization_pipeline(diar_model_id, hf_token)
+        pipeline = load_diarization_pipeline(diar_model_id, hf_token, device)
         run_diarization_on_dir(wav_dir, output_dir, pipeline, output_format)
     else:
         return "Veuillez fournir un modèle de segmentation et un token HF."
@@ -386,7 +380,7 @@ def run_pipeline_from_interface(wav_dir, eaf_dir, output_dir, diar_model_id, asr
     else:
         tsv_dir = os.path.join(output_dir, "tsv")
 
-    processor, model = load_whisper_model(asr_model_id)
+    processor, model = load_whisper_model(asr_model_id, device)
     dataset_dict = load_dataset_from_tsv_dir(tsv_dir)
     transcribed_dir = os.path.join(output_dir, "tsv_transcribed")
     transcribe_dataset_dir(dataset_dict, processor, model, transcribed_dir, language=language)
@@ -418,17 +412,23 @@ def main():
     parser.add_argument('--language', type=str, required=False, help="Code langue pour Whisper (ex : fr, ht, en)")
     parser.add_argument('--keep-temp-audio', action='store_true',
                         help="Si spécifié, conserve les fichiers audio temporaires après exécution.")
+    parser.add_argument('--device', type=str, choices=['cpu', 'cuda'], default=None,
+                        help="Choisir le device pour l'inférence : 'cpu' ou 'cuda'. Par défaut, utilise cuda si disponible.")
 
     args = parser.parse_args()
 
-    # Conversion des fichiers audio
+    if args.device is not None:
+        device = args.device
+    else:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
     tmp_wav_dir = os.path.join(args.output_dir, "_temp_wavs")
     converted_wav_dir = convert_audio_files_to_wav(args.wav_dir, tmp_wav_dir)
 
     try:
         # Étape de diarisation
         if args.mode in ['diarize', 'pipeline']:
-            pipeline = load_diarization_pipeline(args.segmentation_model_id, args.hf_token)
+            pipeline = load_diarization_pipeline(args.segmentation_model_id, args.hf_token, device)
             run_diarization_on_dir(converted_wav_dir, args.output_dir, pipeline, args.out_format)
 
         # Préparation des données pour ASR (si transcribe ou pipeline)
@@ -436,23 +436,33 @@ def main():
             if not args.eaf_dir:
                 raise ValueError("--eaf-dir est requis pour le mode 'transcribe'.")
             tsv_dir = build_dataset_from_eaf_dir(args.eaf_dir, converted_wav_dir, args.output_dir)
+
         elif args.mode == 'pipeline':
-            tsv_dir = os.path.join(args.output_dir, "tsv")
+            if args.out_format == 'eaf':
+                # Pour pipeline+eaf : on prend les EAF produits à l'étape précédente
+                eaf_dir_for_asr = os.path.join(args.output_dir, "eaf")
+                if not os.path.exists(eaf_dir_for_asr):
+                    raise FileNotFoundError(f"Dossier EAF non trouvé à {eaf_dir_for_asr}.")
+                tsv_dir = build_dataset_from_eaf_dir(eaf_dir_for_asr, converted_wav_dir, args.output_dir)
+            else:
+                tsv_dir = os.path.join(args.output_dir, "tsv")
 
         # Transcription automatique
         if args.mode in ['transcribe', 'pipeline']:
-            processor, model = load_whisper_model(args.asr_model_id)
+            processor, model = load_whisper_model(args.asr_model_id, device)
+            if not os.path.exists(tsv_dir):
+                raise FileNotFoundError(f"Le dossier TSV {tsv_dir} n'existe pas. Vérifiez l'étape précédente.")
             dataset_dict = load_dataset_from_tsv_dir(tsv_dir)
             transcribed_tsv_dir = os.path.join(args.output_dir, "tsv_transcribed")
             transcribe_dataset_dir(dataset_dict, processor, model, transcribed_tsv_dir, language=args.language)
 
             # Mise à jour des EAF avec transcriptions
-            if args.out_format == "eaf" and args.eaf_dir:
+            if args.out_format == "eaf":
+                # On met à jour les EAF générés par la diarisation
                 eaf_updated_dir = os.path.join(args.output_dir, "eaf_updated")
-                update_eaf_with_tsv_dir(args.eaf_dir, transcribed_tsv_dir, eaf_updated_dir)
+                update_eaf_with_tsv_dir(eaf_dir_for_asr, transcribed_tsv_dir, eaf_updated_dir)
 
     finally:
-        # Nettoyage du dossier temporaire si on ne souhaite PAS le conserver
         if not args.keep_temp_audio:
             clean_temp_wavs(tmp_wav_dir)
 
