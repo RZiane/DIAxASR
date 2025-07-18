@@ -33,6 +33,12 @@ projet/
 ├── textgrid/          # fichiers .TextGrid existants (facultatif)
 └── outputs/           # dossiers de sortie générés automatiquement
 ```
+---
+
+## Utilsation par notebook
+
+Le notebook `run_DIAxASR.ipynb` permet l'utilisation complète du module de l'installation à l'exécution.
+Autrement, la marche à suivre est détaillée ci-dessous:
 
 ---
 
