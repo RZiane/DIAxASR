@@ -353,44 +353,126 @@ def update_eaf_with_tsv_dir(eaf_dir, tsv_dir, output_dir):
                         if ann_value == "" and ann_start == start_time and ann_end == end_time:
                             eaf.remove_annotation(speaker, ann_start, ann_end)
                             eaf.add_annotation(speaker, ann_start, ann_end, value=text)
+                        elif ann_value.strip(" ") == "!" and ann_start == start_time and ann_end == end_time:
+                            eaf.remove_annotation(speaker, ann_start, ann_end)
+                            eaf.add_annotation(speaker, ann_start, ann_end, value=text)    
                             # print(f"Annotation mise à jour : {speaker}, {start_time}-{end_time}, {text}")
 
             output_eaf_path = os.path.join(output_dir, f"{base_name}.eaf")
             eaf.to_file(output_eaf_path)
             print(f"Fichier EAF mis à jour : {output_eaf_path}")
 
+def eaf2textgrid(eaf_path, textgrid_path):
+    eaf = pympi.Elan.Eaf(eaf_path)
+    textgrid = eaf.to_textgrid()
+    textgrid.to_file(textgrid_path)
+
+def textgrid2eaf(textgrid_path, eaf_path):
+    textgrid = pympi.Praat.TextGrid(textgrid_path)
+    eaf = textgrid.to_eaf(skipempty=True)
+    eaf.to_file(eaf_path)
+
 # Fonction pour appel depuis une interface Gradio
-def run_pipeline_from_interface(wav_dir, eaf_dir, output_dir, diar_model_id, asr_model_id, hf_token, output_format, language, device):
+def run_pipeline_from_interface(
+    wav_dir,           # dossier audio
+    input_dir,         # dossier EAF ou TextGrid à transcrire (optionnel)
+    output_dir,        # dossier de sortie
+    diar_model_id,     # modèle pyannote
+    asr_model_id,      # modèle Whisper
+    hf_token,          # token HF
+    output_format,     # "eaf", "tsv" ou "textgrid"
+    language,          # langue ASR
+    device,            # "cpu" ou "cuda"
+    mode='pipeline',   # "diarize", "transcribe", "pipeline"
+    keep_temp_audio=False
+):
+    """
+    Interface web pour le pipeline DIAxASR multi-format.
+    """
     torch.cuda.empty_cache()
     gc.collect()
+    
+    # Conversion des audios en wav
+    tmp_wav_dir = os.path.join(output_dir, "_temp_wavs")
+    converted_wav_dir = convert_audio_files_to_wav(wav_dir, tmp_wav_dir)
+    
+    eaf_dir_for_asr = None
+    temp_eaf_dir = None
 
-    if output_format not in ["tsv", "eaf"]:
-        return f"Format invalide : {output_format}"
+    try:
+        # DIARISATION
+        if mode in ['diarize', 'pipeline']:
+            diar_out_format = 'eaf' if output_format == 'textgrid' else output_format
+            pipeline = load_diarization_pipeline(diar_model_id, hf_token, device)
+            run_diarization_on_dir(converted_wav_dir, output_dir, pipeline, diar_out_format)
+            if mode == 'pipeline':
+                eaf_dir_for_asr = os.path.join(output_dir, "eaf")
 
-    if diar_model_id and hf_token:
-        pipeline = load_diarization_pipeline(diar_model_id, hf_token, device)
-        run_diarization_on_dir(wav_dir, output_dir, pipeline, output_format)
-    else:
-        return "Veuillez fournir un modèle de segmentation et un token HF."
+        # PRÉPARATION DES FICHIERS SEGMENTS POUR ASR
+        if (mode == 'transcribe') or (mode == 'pipeline' and input_dir):
+            if not input_dir:
+                raise ValueError("input_dir (EAF ou TextGrid) requis pour la transcription.")
+            entries = [f for f in os.listdir(input_dir) if not f.startswith('.')]
+            if all(f.lower().endswith('.eaf') for f in entries):
+                eaf_dir_for_asr = input_dir
+            elif all(f.lower().endswith('.textgrid') for f in entries):
+                temp_eaf_dir = os.path.join(output_dir, "_temp_eaf_from_textgrid")
+                os.makedirs(temp_eaf_dir, exist_ok=True)
+                for fname in entries:
+                    if fname.lower().endswith(".textgrid"):
+                        textgrid_path = os.path.join(input_dir, fname)
+                        eaf_path = os.path.join(temp_eaf_dir, fname.replace(".TextGrid", ".eaf").replace(".textgrid", ".eaf"))
+                        textgrid2eaf(textgrid_path, eaf_path)
+                        print(f"✅ Converti {textgrid_path} -> {eaf_path}")
+                eaf_dir_for_asr = temp_eaf_dir
+            else:
+                raise ValueError("input_dir doit contenir uniquement des .eaf ou .TextGrid")
+        
+        tsv_dir = None
+        if (mode == 'transcribe') or (mode == 'pipeline' and eaf_dir_for_asr):
+            tsv_dir = build_dataset_from_eaf_dir(eaf_dir_for_asr, converted_wav_dir, output_dir)
+        elif mode == 'pipeline' and not eaf_dir_for_asr:
+            eaf_dir_for_asr = os.path.join(output_dir, "eaf")
+            if not os.path.exists(eaf_dir_for_asr):
+                raise FileNotFoundError(f"Dossier EAF non trouvé à {eaf_dir_for_asr}.")
+            tsv_dir = build_dataset_from_eaf_dir(eaf_dir_for_asr, converted_wav_dir, output_dir)
+        else:
+            tsv_dir = os.path.join(output_dir, "tsv")
 
-    if output_format == "eaf":
-        if not eaf_dir:
-            return "Le dossier EAF est requis pour une sortie au format EAF."
-        tsv_dir = build_dataset_from_eaf_dir(eaf_dir, wav_dir, output_dir)
-    else:
-        tsv_dir = os.path.join(output_dir, "tsv")
+        # ASR
+        if mode in ['transcribe', 'pipeline']:
+            processor, model = load_whisper_model(asr_model_id, device)
+            if not os.path.exists(tsv_dir):
+                raise FileNotFoundError(f"Le dossier TSV {tsv_dir} n'existe pas.")
+            dataset_dict = load_dataset_from_tsv_dir(tsv_dir)
+            transcribed_tsv_dir = os.path.join(output_dir, "tsv_transcribed")
+            transcribe_dataset_dir(dataset_dict, processor, model, transcribed_tsv_dir, language=language)
 
-    processor, model = load_whisper_model(asr_model_id, device)
-    dataset_dict = load_dataset_from_tsv_dir(tsv_dir)
-    transcribed_dir = os.path.join(output_dir, "tsv_transcribed")
-    transcribe_dataset_dir(dataset_dict, processor, model, transcribed_dir, language=language)
-
-    if output_format == "eaf" and eaf_dir:
-        eaf_updated_dir = os.path.join(output_dir, "eaf_updated")
-        update_eaf_with_tsv_dir(eaf_dir, transcribed_dir, eaf_updated_dir)
+            # Mise à jour EAF avec transcriptions (si besoin)
+            if output_format in ["eaf", "textgrid"]:
+                eaf_updated_dir = os.path.join(output_dir, "eaf_updated")
+                update_eaf_with_tsv_dir(eaf_dir_for_asr, transcribed_tsv_dir, eaf_updated_dir)
+        
+        # Conversion EAF→TextGrid (si demandé)
+        if output_format == 'textgrid':
+            eaf_dir_to_convert = os.path.join(output_dir, "eaf_updated") \
+                if mode in ['transcribe', 'pipeline'] else os.path.join(output_dir, "eaf")
+            textgrid_dir = os.path.join(output_dir, "textgrid_updated")
+            os.makedirs(textgrid_dir, exist_ok=True)
+            for fname in os.listdir(eaf_dir_to_convert):
+                if fname.endswith(".eaf"):
+                    eaf_path = os.path.join(eaf_dir_to_convert, fname)
+                    tg_path = os.path.join(textgrid_dir, fname.replace(".eaf", ".TextGrid"))
+                    eaf2textgrid(eaf_path, tg_path)
+                    print(f"✅ Converti {eaf_path} -> {tg_path}")
+    
+    finally:
+        if not keep_temp_audio:
+            clean_temp_wavs(tmp_wav_dir)
+        # if temp_eaf_dir and os.path.exists(temp_eaf_dir):
+        #     shutil.rmtree(temp_eaf_dir)
 
     return f"✅ Pipeline terminé. Résultats disponibles dans : {output_dir}"
-
 
 # CLI principale
 def main():
@@ -401,14 +483,14 @@ def main():
     parser.add_argument('--mode', type=str, required=True, choices=['diarize', 'transcribe', 'pipeline'],
                         help="Mode d'exécution : diarize, transcribe, pipeline")
     parser.add_argument('--wav-dir', type=str, required=True, help="Dossier contenant les fichiers audio à traiter")
-    parser.add_argument('--eaf-dir', type=str, default=None, help="Dossier contenant les fichiers EAF")
+    parser.add_argument('--input-dir', type=str, default=None, help="Dossier contenant les fichiers EAF ou TextGrid (entrée manuelle ou issue de la diarisation)")
     parser.add_argument('--output-dir', type=str, required=True, help="Dossier de sortie pour les résultats")
     parser.add_argument('--segmentation-model-id', type=str, required=False, help="ID du modèle Pyannote (segmentation)")
     parser.add_argument('--asr-model-id', type=str, required=False, default="openai/whisper-large-v3-turbo",
                         help="ID du modèle Whisper pour l'ASR")
     parser.add_argument('--hf-token', type=str, required=False, help="Hugging Face token pour Pyannote")
-    parser.add_argument('--out-format', type=str, choices=['eaf', 'tsv'], default='tsv',
-                        help="Format de sortie (eaf ou tsv)")
+    parser.add_argument('--out-format', type=str, choices=['eaf', 'tsv', 'textgrid'], default='tsv',
+                        help="Format de sortie (eaf, tsv ou textgrid)")
     parser.add_argument('--language', type=str, required=False, help="Code langue pour Whisper (ex : fr, ht, en)")
     parser.add_argument('--keep-temp-audio', action='store_true',
                         help="Si spécifié, conserve les fichiers audio temporaires après exécution.")
@@ -417,37 +499,62 @@ def main():
 
     args = parser.parse_args()
 
-    if args.device is not None:
-        device = args.device
-    else:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Choix du device
+    device = args.device if args.device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
 
     tmp_wav_dir = os.path.join(args.output_dir, "_temp_wavs")
     converted_wav_dir = convert_audio_files_to_wav(args.wav_dir, tmp_wav_dir)
 
+    # Initialisation du dossier EAF à utiliser pour l'ASR (input réel ou conversion à la volée)
+    eaf_dir_for_asr = None
+    temp_eaf_dir = None
+
     try:
         # Étape de diarisation
         if args.mode in ['diarize', 'pipeline']:
+            diar_out_format = 'eaf' if args.out_format == 'textgrid' else args.out_format
             pipeline = load_diarization_pipeline(args.segmentation_model_id, args.hf_token, device)
-            run_diarization_on_dir(converted_wav_dir, args.output_dir, pipeline, args.out_format)
-
-        # Préparation des données pour ASR (si transcribe ou pipeline)
-        if args.mode == 'transcribe':
-            if not args.eaf_dir:
-                raise ValueError("--eaf-dir est requis pour le mode 'transcribe'.")
-            tsv_dir = build_dataset_from_eaf_dir(args.eaf_dir, converted_wav_dir, args.output_dir)
-
-        elif args.mode == 'pipeline':
-            if args.out_format == 'eaf':
-                # Pour pipeline+eaf : on prend les EAF produits à l'étape précédente
+            run_diarization_on_dir(converted_wav_dir, args.output_dir, pipeline, diar_out_format)
+            # Si pipeline, eaf_dir_for_asr = dossier eaf généré par la diarisation
+            if args.mode == 'pipeline':
                 eaf_dir_for_asr = os.path.join(args.output_dir, "eaf")
-                if not os.path.exists(eaf_dir_for_asr):
-                    raise FileNotFoundError(f"Dossier EAF non trouvé à {eaf_dir_for_asr}.")
-                tsv_dir = build_dataset_from_eaf_dir(eaf_dir_for_asr, converted_wav_dir, args.output_dir)
-            else:
-                tsv_dir = os.path.join(args.output_dir, "tsv")
 
-        # Transcription automatique
+        # Préparation de l'entrée pour ASR (transcribe ou pipeline)
+        if args.mode == 'transcribe' or (args.mode == 'pipeline' and args.input_dir):
+            if not args.input_dir:
+                raise ValueError("--input-dir est requis pour la transcription.")
+            # Vérifie le contenu du dossier input_dir : eaf ou textgrid
+            entries = [f for f in os.listdir(args.input_dir) if not f.startswith('.')]
+            if all(f.lower().endswith('.eaf') for f in entries):
+                eaf_dir_for_asr = args.input_dir
+            elif all(f.lower().endswith('.textgrid') for f in entries):
+                # Conversion TextGrid → EAF
+                temp_eaf_dir = os.path.join(args.output_dir, "_temp_eaf_from_textgrid")
+                os.makedirs(temp_eaf_dir, exist_ok=True)
+                for fname in entries:
+                    if fname.lower().endswith(".textgrid"):
+                        textgrid_path = os.path.join(args.input_dir, fname)
+                        eaf_path = os.path.join(temp_eaf_dir, fname.replace(".TextGrid", ".eaf").replace(".textgrid", ".eaf"))
+                        textgrid2eaf(textgrid_path, eaf_path)
+                        print(f"✅ Converti {textgrid_path} -> {eaf_path}")
+                eaf_dir_for_asr = temp_eaf_dir
+            else:
+                raise ValueError("Le dossier --input-dir doit contenir soit uniquement des .eaf, soit uniquement des .TextGrid.")
+
+        # Extraction des segments pour ASR (transcribe/pipeline)
+        tsv_dir = None
+        if args.mode == 'transcribe' or (args.mode == 'pipeline' and eaf_dir_for_asr):
+            tsv_dir = build_dataset_from_eaf_dir(eaf_dir_for_asr, converted_wav_dir, args.output_dir)
+        elif args.mode == 'pipeline' and not eaf_dir_for_asr:
+            # En pipeline, si pas d'input_dir fourni, on suppose que les EAF viennent d'avant
+            eaf_dir_for_asr = os.path.join(args.output_dir, "eaf")
+            if not os.path.exists(eaf_dir_for_asr):
+                raise FileNotFoundError(f"Dossier EAF non trouvé à {eaf_dir_for_asr}.")
+            tsv_dir = build_dataset_from_eaf_dir(eaf_dir_for_asr, converted_wav_dir, args.output_dir)
+        else:
+            tsv_dir = os.path.join(args.output_dir, "tsv")
+
+        # Étape ASR (sur les segments)
         if args.mode in ['transcribe', 'pipeline']:
             processor, model = load_whisper_model(args.asr_model_id, device)
             if not os.path.exists(tsv_dir):
@@ -457,14 +564,29 @@ def main():
             transcribe_dataset_dir(dataset_dict, processor, model, transcribed_tsv_dir, language=args.language)
 
             # Mise à jour des EAF avec transcriptions
-            if args.out_format == "eaf":
-                # On met à jour les EAF générés par la diarisation
+            if args.out_format in ["eaf", "textgrid"]:
                 eaf_updated_dir = os.path.join(args.output_dir, "eaf_updated")
                 update_eaf_with_tsv_dir(eaf_dir_for_asr, transcribed_tsv_dir, eaf_updated_dir)
+
+        # Conversion EAF -> TextGrid si demandé
+        if args.out_format == 'textgrid':
+            eaf_dir_to_convert = os.path.join(args.output_dir, "eaf_updated") \
+                if args.mode in ['transcribe', 'pipeline'] else os.path.join(args.output_dir, "eaf")
+            textgrid_dir = os.path.join(args.output_dir, "textgrid_updated")
+            os.makedirs(textgrid_dir, exist_ok=True)
+            for fname in os.listdir(eaf_dir_to_convert):
+                if fname.endswith(".eaf"):
+                    eaf_path = os.path.join(eaf_dir_to_convert, fname)
+                    tg_path = os.path.join(textgrid_dir, fname.replace(".eaf", ".TextGrid"))
+                    eaf2textgrid(eaf_path, tg_path)
+                    print(f"✅ Converti {eaf_path} -> {tg_path}")
 
     finally:
         if not args.keep_temp_audio:
             clean_temp_wavs(tmp_wav_dir)
+
+        # if temp_eaf_dir and os.path.exists(temp_eaf_dir):
+        #     shutil.rmtree(temp_eaf_dir)
 
 if __name__ == "__main__":
     main()
