@@ -1,19 +1,22 @@
-# DIAxASR – Pipeline de Diarisation et Transcription Automatique
+# DIAxASR – Pipeline de Diarisation et Transcription Multiformat (EAF / TSV / TextGrid)
 
-## Présentation
+DIAxASR est un pipeline Python pour la segmentation, la diarisation et la transcription automatique de corpus oraux, avec compatibilité complète entre les formats **ELAN (.eaf)**, **Praat (.TextGrid)** et **TSV**. Il prend en charge la conversion entre ces formats et intègre une interface utilisateur via Gradio (`interface.py`), en plus de la ligne de commande classique.
 
+Développé dans le cadre du projet [CAENNAIS](https://crisco.unicaen.fr/caennais-corpus-audio-detudiants-natifs-et-non-natifs-en-interactions/).
 
+---
 
-Développé dans le cadre du projet [CAENNAIS](https://crisco.unicaen.fr/caennais-corpus-audio-detudiants-natifs-et-non-natifs-en-interactions/), `DIAxASR.py` est un pipeline Python permettant :
+## Fonctionnalités principales
 
-- la **diarisation automatique** de fichiers audio à l’aide d’un modèle Pyannote Audio ;
-- la **segmentation des enregistrements** avec export des segments audio et des métadonnées (`.tsv`, `.eaf`) ;
-- la **transcription automatique** avec un modèle Whisper (fine-tuné) ;
-- la **mise à jour des fichiers ELAN (`.eaf`)** avec les transcriptions.
-
-Ce pipeline peut être exécuté :
-- en **ligne de commande** via le script `DIAxASR.py` ;
-- ou **pas-à-pas** via le notebook interactif `run_DIAxASR.ipynb`.
+* Diarisation automatique à l’aide d’un modèle Pyannote Audio.
+* Découpage des fichiers audio et export des segments en `.tsv` ou `.eaf`.
+* Transcription automatique des segments audio avec Whisper (modèle fine-tuné compatible).
+* Conversion automatique et bidirectionnelle entre les formats ELAN (`.eaf`) et Praat (`.TextGrid`).
+* Mise à jour intelligente des fichiers ELAN avec les transcriptions obtenues.
+* Filtrage automatique des segments trop longs (>30s) pour fiabiliser l’ASR.
+* Interface graphique web avec Gradio (`interface.py`) pour exécuter le pipeline sans coder.
+* Gestion automatique des dossiers temporaires et des conversions intermédiaires.
+* Support CPU et GPU, détection automatique du device.
 
 ---
 
@@ -22,10 +25,12 @@ Ce pipeline peut être exécuté :
 ```
 projet/
 ├── DIAxASR.py
+├── interface.py
 ├── run_DIAxASR.ipynb
 ├── requirements.txt
-├── audio/             # fichiers WAV à traiter
-├── eaf/               # (facultatif) fichiers .eaf existants
+├── audio/             # fichiers audio à traiter (wav, mp3, etc.)
+├── eaf/               # fichiers .eaf existants (facultatif)
+├── textgrid/          # fichiers .TextGrid existants (facultatif)
 └── outputs/           # dossiers de sortie générés automatiquement
 ```
 
@@ -33,120 +38,107 @@ projet/
 
 ## Installation
 
-### Étape 1 – Création d’un environnement Python
-
-Créez un environnement `conda` ou `venv` (Python 3.10+ recommandé) :
+### 1. Création de l’environnement Python
 
 ```bash
 conda create -n diaxasr python=3.11
 conda activate diaxasr
 ```
 
-### Étape 2 – Installation des dépendances
-
-Deux options sont possibles :
-
-#### Option 1 – Installation via le notebook (recommandée pour explorations)
-
-Le notebook `run_DIAxASR.ipynb` contient des **cellules d'installation des dépendances** :
-
-```python
-!git clone https://github.com/huggingface/diarizers.git
-!pip install -e chemin/du/depot/diarizers/.
-```
-Optionnel, uniquement pour l'utilisation de modèles de diarisation finetunés avec [diarizers](https://github.com/huggingface/diarizers)
-
-et 
-
-```python
-!pip install -r chemin/du/fichier/requirements.txt
-```
-
-Assurez-vous d'avoir modifié le chemin du `requirements.txt`.
-
-#### Option 2 – Installation manuelle
-
-En ligne de commande :
+### 2. Installation des dépendances
 
 ```bash
 pip install -r requirements.txt
 ```
 
-**Le modèle Pyannote nécessite un token d'authentification Hugging Face.**
+Pour utiliser un modèle de segmentation fine-tuné compatible avec [diarizers](https://github.com/huggingface/diarizers) :
+
+```bash
+git clone https://github.com/huggingface/diarizers.git
+pip install -e diarizers/.
+```
+
+Le pipeline Whisper et pyannote nécessite un Hugging Face token (`--hf-token`).
 
 ---
 
-## Exécution
+## Exécution en ligne de commande
 
-### En notebook (`run_DIAxASR.ipynb`)
+Modes disponibles :
 
-Ce notebook exécute étape par étape :
+* `--mode diarize` : segmentation et diarisation uniquement, export en `tsv`, `eaf` ou `textgrid`
+* `--mode transcribe` : transcription à partir d’un dossier `.eaf` ou `.TextGrid` (conversion automatique)
+* `--mode pipeline` : exécution complète de l’audio brut jusqu’à l’export des transcriptions
 
-1. La **diarisation** avec export TSV ou EAF ;
-2. La **création du jeu de données** à partir de fichiers `.eaf` ou `.tsv` ;
-3. La **transcription automatique** avec Whisper ;
-4. La **mise à jour facultative** des fichiers `.eaf` avec les transcriptions.
-
-**Idéal pour tester sur un sous-ensemble et prendre en main le script.**
-
----
-
-### En ligne de commande
-
-Vous pouvez aussi exécuter le script complet via :
+Exemple d’exécution complète :
 
 ```bash
 python DIAxASR.py \
   --mode pipeline \
   --wav-dir ./audio \
-  --eaf-dir ./eaf \
+  --input-dir ./eaf \
   --output-dir ./outputs \
-  --segmentation-model-id your_model_id \
-  --hf-token your_hf_token \
-  --asr-model-id Rziane/whisper-large-v3-turbo-CAENNAIS \
-  --out-format eaf
+  --segmentation-model-id "votre_modele_pyan" \
+  --hf-token "hf_xxxxxxxx" \
+  --asr-model-id "openai/whisper-large-v3-turbo" \
+  --out-format textgrid
 ```
 
-Autres modes possibles :
-- `--mode diarize` : diarisation uniquement
-- `--mode transcribe` : transcription uniquement (à partir de fichiers `.eaf` qui contiennent des tours de parole segmentés par locuteurs)
+Le paramètre `--input-dir` accepte des dossiers de `.eaf` ou de `.textgrid` (conversion automatique).
 
 ---
 
-## Résultats produits
+## Utilisation par interface web
 
-Selon les paramètres et les formats choisis :
+L’interface Gradio (`interface.py`) permet d’exécuter tout le pipeline depuis un navigateur (local ou distant).
 
-- `outputs/tsv/` : métadonnées après diarisation ;
-- `outputs/tsv_transcribed/` : transcriptions par segments ;
-- `outputs/eaf/` : fichiers ELAN après diarisation (si `--out-format eaf`) ;
-- `outputs/eaf_updated/` : fichiers ELAN mis à jour avec les transcriptions.
+Lancer simplement :
 
----
+```bash
+python interface.py
+```
 
-## Remarques
+Fonctionnalités proposées :
 
-- La diarisation est actuellement configurée pour **2 locuteurs** (`num_speakers=2`), mais cela peut être adapté.
-- Les segments de plus de 30s sont ignorés pour éviter les erreurs ASR.
-- Le script crée automatiquement tous les sous-dossiers nécessaires.
+* Sélection du mode (`pipeline`, `diarize`, `transcribe`)
+* Choix du dossier audio, de l’entrée segmentée (EAF ou TextGrid), du dossier de sortie
+* Paramètres de modèles (Pyannote, Whisper, HF token, langue, format de sortie)
+* Retour direct du journal de traitement
 
----
-
-## Auteurs
-
-Développé par **Rayan Ziane** dans le cadre du projet [CAENNAIS](https://crisco.unicaen.fr/caennais-corpus-audio-detudiants-natifs-et-non-natifs-en-interactions/)
-
-Modèle ASR pour la transcription semi-orthographique du français parlé : [`Rziane/whisper-large-v3-turbo-CAENNAIS_GB`](https://huggingface.co/Rziane/whisper-large-v3-turbo-CAENNAIS_GB)
-
+Tout est accessible par formulaire, aucun chemin n’a besoin d’être codé en dur.
 
 ---
 
-## Références
+## Entrées et sorties prises en charge
 
-- **Whisper (ASR)** : OpenAI. [https://github.com/openai/whisper](https://github.com/openai/whisper)  
-  Modèle utilisé par défaut : [openai/whisper-large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo)
+* **Entrée** : dossier audio (`wav`, `mp3`, etc.), dossier d’annotations ELAN (`.eaf`) ou Praat (`.TextGrid`)
+* **Sortie** : `tsv`, `eaf`, `textgrid` (choix libre selon votre workflow)
+* Conversion automatique : vous pouvez fournir uniquement des `.eaf` ou `.TextGrid`, la conversion s’effectue dans le pipeline
+* Dossiers produits :
 
-- **pyannote-audio (Diarisation)** : Hervé Bredin et al. [https://github.com/pyannote/pyannote-audio](https://github.com/pyannote/pyannote-audio)
+  * `outputs/tsv/` : métadonnées de segmentation/diarisation
+  * `outputs/eaf/` : EAF issus de la diarisation
+  * `outputs/textgrid_updated/` : TextGrid générés automatiquement
+  * `outputs/tsv_transcribed/` : transcriptions segmentées
+  * `outputs/eaf_updated/` : EAF mis à jour avec les transcriptions
 
-- **ELAN** : Max Planck Institute for Psycholinguistics. [https://archive.mpi.nl/tla/elan](https://archive.mpi.nl/tla/elan)
+---
 
+## Points importants
+
+* Les segments de plus de 30 secondes sont ignorés pour la transcription automatique.
+* La mise à jour des EAF ne modifie que les intervalles vides ou balisés “!” dans les fichiers TEXTGRID (où les intervalles entre les annotations réelles sont considérés comme des annotations).
+* Le script crée tous les sous-dossiers nécessaires automatiquement.
+* Vous pouvez utiliser vos propres modèles fine-tunés Pyannote/Whisper.
+* Le pipeline détecte automatiquement le matériel pour utiliser votre carte graphique ou le processeur (CPU ou GPU).
+
+---
+
+## Références et auteurs
+
+Développé par Rayan Ziane dans le cadre du projet [CAENNAIS](https://crisco.unicaen.fr/caennais-corpus-audio-detudiants-natifs-et-non-natifs-en-interactions/).
+
+* ASR : [openai/whisper-large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo) ou [Rziane/whisper-large-v3-turbo-CAENNAIS_GB](https://huggingface.co/Rziane/whisper-large-v3-turbo-CAENNAIS_GB)
+* Diarisation : [pyannote-audio](https://github.com/pyannote/pyannote-audio)
+* ELAN : [MPI ELAN](https://archive.mpi.nl/tla/elan)
+* Praat : [Praat](https://www.fon.hum.uva.nl/praat/)
