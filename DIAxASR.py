@@ -63,18 +63,22 @@ def convert_audio_files_to_wav(input_dir, tmp_dir):
         base, ext = os.path.splitext(filename)
         ext = ext.lower()
 
-        if ext not in supported_formats:
-            continue
+        if ext == ".wav":
+            pass
+        else:
 
-        try:
-            audio = AudioSegment.from_file(file_path)
-            audio = audio.set_channels(1).set_frame_rate(16000)
-            wav_path = os.path.join(tmp_dir, f"{base}.wav")
-            audio.export(wav_path, format="wav")
-            print(f"✅ Converti : {filename} -> {wav_path}")
-            converted += 1
-        except Exception as e:
-            print(f"⚠️ Erreur de conversion pour {filename} : {e}")
+            if ext not in supported_formats:
+                continue
+
+            try:
+                audio = AudioSegment.from_file(file_path)
+                audio = audio.set_channels(1).set_frame_rate(16000)
+                wav_path = os.path.join(tmp_dir, f"{base}.wav")
+                audio.export(wav_path, format="wav")
+                print(f"✅ Converti : {filename} -> {wav_path}")
+                converted += 1
+            except Exception as e:
+                print(f"⚠️ Erreur de conversion pour {filename} : {e}")
 
     print(f"🎧 Conversion terminée. {converted} fichiers convertis dans {tmp_dir}.")
     return tmp_dir
@@ -181,6 +185,7 @@ def build_dataset_from_eaf_dir(eaf_dir, wav_dir, output_base_dir):
     for file_name in os.listdir(eaf_dir):
         if file_name.endswith(".eaf"):
             base_name = file_name[:-4]
+            print('Fichier traité: '+ base_name)
             eaf_path = os.path.join(eaf_dir, file_name)
             wav_path = os.path.join(wav_dir, base_name + ".wav")
 
@@ -236,15 +241,17 @@ def build_dataset_from_eaf_dir(eaf_dir, wav_dir, output_base_dir):
                             continue
 
                         timecodes = f"[{start_time}, {end_time}]"
-                        data.append([output_wav, value, timecodes, tier_name])
+                        data.append([output_wav, value, timecodes, tier_name, base_name])
 
             os.remove(tmp_path)
 
-    df = pd.DataFrame(data, columns=["audio", "text", "timecodes", "speaker"])
-    for base_name in df['audio'].apply(lambda x: os.path.basename(x).split('_')[0]).unique():
-        df_part = df[df['audio'].str.contains(base_name)]
-        output_tsv_path = os.path.join(output_base_dir, "tsv", f"{base_name}.tsv")
-        df_part.to_csv(output_tsv_path, sep='\t', index=False)
+    df = pd.DataFrame(data, columns=["audio", "text", "timecodes", "speaker", "source"])
+
+    # Pour chaque source (nom d'EAF), on sauvegarde un TSV
+    for source in df['source'].unique():
+        df_part = df[df['source'] == source]
+        output_tsv_path = os.path.join(output_base_dir, "tsv", f"{source}.tsv")
+        df_part.drop(columns=['source']).to_csv(output_tsv_path, sep='\t', index=False)
         print(f"✅ TSV généré : {output_tsv_path}")
 
     print(f"⚠️ Annotations ignorées : {annotations_passed}")
@@ -258,6 +265,57 @@ def load_whisper_model(model_id, device):
     print(f"Modèle Whisper chargé : {model_id} sur {device}")
     return processor, model
 
+# def load_model(model_id, device):
+#     """
+#     Charge un modèle ASR, compatible avec transformers ET SpeechBrain.
+#     """
+#     try:
+#         # Essai avec transformers (Whisper)
+#         from transformers import WhisperProcessor, WhisperForConditionalGeneration
+#         processor = WhisperProcessor.from_pretrained(model_id)
+#         model = WhisperForConditionalGeneration.from_pretrained(model_id)
+#         model = model.to(device)
+#         print(f"✓ Modèle Whisper (transformers) chargé : {model_id} sur {device}")
+#         return processor, model
+    
+#     except OSError as e:
+#         # Si erreur 404 ou fichier manquant → probablement un modèle SpeechBrain
+#         if "does not appear to have a file named" in str(e) or "404" in str(e):
+#             print(f"⚠️  Modèle {model_id} détecté comme SpeechBrain, basculement...")
+            
+#             try:
+#                 from speechbrain.inference.ASR import EncoderASR
+#                 # Chargement avec SpeechBrain
+#                 asr_model = EncoderASR.from_hparams(
+#                     source=model_id,
+#                     savedir=f"pretrained_models/{model_id.replace('/', '_')}"
+#                 )
+                
+#                 # Wrapper minimal pour compatibilité
+#                 class SpeechBrainWrapper:
+#                     def __init__(self, model, device):
+#                         self.model = model
+#                         self.device = device
+                    
+#                     def to(self, device):
+#                         # SpeechBrain gère déjà le device dans run_opts
+#                         return self
+                
+#                 print(f"✓ Modèle SpeechBrain chargé : {model_id}")
+#                 # Retourne None pour processor (pas besoin) et le modèle wrapper
+#                 return None, SpeechBrainWrapper(asr_model, device)
+            
+#             except ImportError:
+#                 raise ImportError(
+#                     "SpeechBrain non installé. Exécutez: pip install speechbrain"
+#                 )
+#             except Exception as e_sb:
+#                 raise RuntimeError(
+#                     f"Échec du chargement SpeechBrain : {e_sb}"
+#                 )
+#         else:
+#             # Relance les autres erreurs OSError
+#             raise
 
 # Chargement des datasets audio à partir d'un dossier TSV
 def load_dataset_from_tsv_dir(tsv_dir):
@@ -271,7 +329,7 @@ def load_dataset_from_tsv_dir(tsv_dir):
                 'csv',
                 data_files={"default": file_path},
                 delimiter='\t',
-                column_names=['audio', 'text', 'timecodes', 'speaker'],
+                column_names=['audio', 'text', 'timecodes', 'speaker', 'source'],
                 skiprows=1)['default'].cast_column("audio", Audio(sampling_rate=16000))
 
             dataset_dict[base_name] = dataset
@@ -281,7 +339,7 @@ def load_dataset_from_tsv_dir(tsv_dir):
 # Transcription des datasets et sauvegarde des résultats dans un dossier TSV
 def transcribe_dataset_dir(dataset_dict, processor, model, output_dir, language):
     os.makedirs(output_dir, exist_ok=True)
-
+    
     forced_decoder_ids = processor.get_decoder_prompt_ids(language=language, task="transcribe")
 
     for base_name, dataset in dataset_dict.items():
@@ -323,8 +381,51 @@ def transcribe_dataset_dir(dataset_dict, processor, model, output_dir, language)
         df.to_csv(out_path, sep='\t', index=False)
         print(f"Transcription enregistrée : {out_path}")
 
+# WIP
+def _transcribe_speechbrain(model, audio_path):
+    """Transcription spécifique à SpeechBrain."""
+    try:
+        return model.model.transcribe_file(audio_path)
+    except Exception as e:
+        print(f"Erreur SpeechBrain: {e}")
+        return ""
 
-# Mise à jour des fichiers EAF avec les transcriptions associées
+# WIP
+def _transcribe_whisper(processor, model, audio_path, language):
+    """Transcription spécifique à Whisper (votre code original)."""
+    from pydub import AudioSegment
+    import numpy as np
+    
+    try:
+        audio = AudioSegment.from_file(audio_path, format="wav")
+        
+        if len(audio) < 1000:
+            padding = AudioSegment.silent(duration=1000 - len(audio), frame_rate=16000)
+            audio += padding
+        
+        samples = np.array(audio.set_frame_rate(16000).set_sample_width(2).set_channels(1).get_array_of_samples()).astype(np.float32) / 32768.0
+        
+        if len(samples) < 480000:
+            padded = np.zeros(480000, dtype=np.float32)
+            padded[:len(samples)] = samples
+        else:
+            padded = samples[:480000]
+        
+        forced_decoder_ids = processor.get_decoder_prompt_ids(language=language, task="transcribe")
+        
+        input_dict = processor(
+            padded,
+            sampling_rate=16000,
+            return_tensors="pt"
+        ).input_features.to(model.device)
+        
+        predicted_ids = model.generate(input_dict, forced_decoder_ids=forced_decoder_ids)
+        return processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
+        
+    except Exception as e:
+        print(f"Erreur Whisper: {e}")
+        return ""
+
 def update_eaf_with_tsv_dir(eaf_dir, tsv_dir, output_dir):
     os.makedirs(output_dir, exist_ok=True)
 
@@ -339,7 +440,9 @@ def update_eaf_with_tsv_dir(eaf_dir, tsv_dir, output_dir):
                 continue
 
             eaf = pympi.Elan.Eaf(eaf_path)
-            df = pd.read_csv(tsv_path, sep='\t')
+            # Lecture du TSV en spécifiant que la colonne 'text' est de type string, et remplacement des NaN par ''
+            df = pd.read_csv(tsv_path, sep='\t', dtype={'text': str})
+            df['text'] = df['text'].fillna('')
 
             for _, row in df.iterrows():
                 speaker = row['speaker']
@@ -350,10 +453,12 @@ def update_eaf_with_tsv_dir(eaf_dir, tsv_dir, output_dir):
                 if speaker in eaf.tiers:
                     for ann in eaf.get_annotation_data_for_tier(speaker):
                         ann_start, ann_end, ann_value = ann
-                        if ann_value == "" and ann_start == start_time and ann_end == end_time:
+                        # Convertir ann_value en chaîne et traiter les NaN
+                        ann_value_str = str(ann_value) if not pd.isna(ann_value) else ''
+                        if ann_value_str == "" and ann_start == start_time and ann_end == end_time:
                             eaf.remove_annotation(speaker, ann_start, ann_end)
                             eaf.add_annotation(speaker, ann_start, ann_end, value=text)
-                        elif ann_value.strip(" ") == "!" and ann_start == start_time and ann_end == end_time:
+                        elif ann_value_str.strip(" ") == "!" and ann_start == start_time and ann_end == end_time:
                             eaf.remove_annotation(speaker, ann_start, ann_end)
                             eaf.add_annotation(speaker, ann_start, ann_end, value=text)    
                             # print(f"Annotation mise à jour : {speaker}, {start_time}-{end_time}, {text}")
@@ -501,9 +606,12 @@ def main():
 
     # Choix du device
     device = args.device if args.device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
-
-    tmp_wav_dir = os.path.join(args.output_dir, "_temp_wavs")
-    converted_wav_dir = convert_audio_files_to_wav(args.wav_dir, tmp_wav_dir)
+    
+    if args.keep_temp_audio:
+        tmp_wav_dir = os.path.join(args.output_dir, "_temp_wavs")
+        converted_wav_dir = convert_audio_files_to_wav(args.wav_dir, tmp_wav_dir)
+    else:
+        converted_wav_dir = args.wav_dir
 
     # Initialisation du dossier EAF à utiliser pour l'ASR (input réel ou conversion à la volée)
     eaf_dir_for_asr = None
@@ -583,7 +691,10 @@ def main():
 
     finally:
         if not args.keep_temp_audio:
-            clean_temp_wavs(tmp_wav_dir)
+            try: 
+                clean_temp_wavs(tmp_wav_dir)
+            except:
+                pass
 
         # if temp_eaf_dir and os.path.exists(temp_eaf_dir):
         #     shutil.rmtree(temp_eaf_dir)
